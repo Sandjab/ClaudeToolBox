@@ -1,0 +1,157 @@
+#!/bin/bash
+
+# Configuration
+KEYS_FILE="$HOME/.api_keys.zsh"
+KEYCHAIN_SERVICE_PREFIX="api-key"
+
+# Couleurs pour l'affichage
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+# Fonctions d'affichage
+info() { echo -e "${GREEN}[INFO]${NC} $1"; }
+warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
+
+# Aide
+show_help() {
+    cat << EOF
+Usage: $(basename "$0") [OPTIONS] [NOM] [VALEUR]
+
+Stocke une clé d'API dans le Trousseau macOS et configure son export automatique.
+
+Arguments:
+    NOM         Nom de la variable d'environnement (ex: OPENAI_API_KEY)
+    VALEUR      Valeur de la clé d'API
+
+Options:
+    -h, --help      Affiche cette aide
+    -l, --list      Liste les clés configurées
+    -d, --delete    Supprime une clé
+
+Exemples:
+    $(basename "$0")                          # Mode interactif (recommandé)
+    $(basename "$0") OPENAI_API_KEY sk-xxx    # Mode direct
+    $(basename "$0") -l                       # Liste les clés
+    $(basename "$0") -d OPENAI_API_KEY        # Supprime une clé
+
+Sécurité:
+    Le mode interactif est recommandé car le mode direct expose la clé dans :
+    - L'historique du shell (~/.zsh_history, ~/.bash_history)
+    - La table des processus (ps aux) pendant l'exécution
+EOF
+}
+
+# Initialiser le fichier de clés et le sourcer dans .zshrc
+init_keys_file() {
+    if [[ ! -f "$KEYS_FILE" ]]; then
+        info "Création du fichier $KEYS_FILE"
+        # Utiliser umask pour éviter la race condition (fichier créé avec 600 dès le départ)
+        (umask 077 && cat > "$KEYS_FILE" << 'EOF'
+# Chargement des clés d'API depuis le Trousseau macOS
+EOF
+        )
+    fi
+
+    # Vérifier/corriger les permissions à chaque exécution
+    [[ -f "$KEYS_FILE" ]] && chmod 600 "$KEYS_FILE"
+
+    if ! grep -q "source.*\.api_keys\.zsh" "$HOME/.zshrc" 2>/dev/null; then
+        info "Ajout du source dans .zshrc"
+        cat >> "$HOME/.zshrc" << EOF
+
+# Chargement des clés d'API depuis le Trousseau
+[[ -f "$KEYS_FILE" ]] && source "$KEYS_FILE"
+EOF
+    fi
+}
+
+# Ajouter une clé
+add_key() {
+    local key_name="$1"
+    local key_value="$2"
+    local service_name="${KEYCHAIN_SERVICE_PREFIX}-${key_name}"
+
+    if [[ ! "$key_name" =~ ^[A-Z_][A-Z0-9_]*$ ]]; then
+        error "Le nom doit être en majuscules avec underscores (ex: OPENAI_API_KEY)"
+    fi
+
+    if security find-generic-password -s "$service_name" &>/dev/null; then
+        warn "Une clé avec ce nom existe déjà"
+        read -p "Remplacer? (o/N) " -n 1 -r
+        echo
+        [[ $REPLY =~ ^[Oo]$ ]] || error "Opération annulée"
+        security delete-generic-password -s "$service_name" &>/dev/null
+    fi
+
+    info "Ajout dans le Trousseau..."
+    security add-generic-password -a "$USER" -s "$service_name" -w "$key_value" || error "Échec"
+
+    init_keys_file
+
+    if grep -q "^export ${key_name}=" "$KEYS_FILE" 2>/dev/null; then
+        sed -i '' "/^export ${key_name}=/d" "$KEYS_FILE"
+    fi
+
+    echo "export ${key_name}=\$(security find-generic-password -s \"${service_name}\" -w 2>/dev/null)" >> "$KEYS_FILE"
+
+    info "Clé '$key_name' configurée!"
+    warn "Exécutez: source ~/.zshrc"
+}
+
+# Lister les clés
+list_keys() {
+    [[ ! -f "$KEYS_FILE" ]] && { info "Aucune clé configurée"; return; }
+    echo "Clés configurées:"
+    grep "^export" "$KEYS_FILE" | sed 's/export \([^=]*\)=.*/  - \1/' | sort
+}
+
+# Supprimer une clé
+delete_key() {
+    local key_name="$1"
+    [[ -z "$key_name" ]] && read -p "Nom de la clé: " key_name
+
+    # Validation du nom pour éviter l'injection sed
+    if [[ ! "$key_name" =~ ^[A-Z_][A-Z0-9_]*$ ]]; then
+        error "Nom de clé invalide (format: MAJUSCULES_AVEC_UNDERSCORES)"
+    fi
+
+    local service_name="${KEYCHAIN_SERVICE_PREFIX}-${key_name}"
+
+    security delete-generic-password -s "$service_name" &>/dev/null && info "Supprimée du Trousseau"
+    [[ -f "$KEYS_FILE" ]] && sed -i '' "/^export ${key_name}=/d" "$KEYS_FILE"
+    info "Clé '$key_name' supprimée"
+}
+
+# Mode interactif
+interactive_mode() {
+    echo "=== Ajout d'une clé d'API ==="
+    read -p "Nom (ex: OPENAI_API_KEY): " key_name
+    [[ -z "$key_name" ]] && error "Nom requis"
+    echo -n "Valeur (masquée): "
+    read -s key_value
+    echo
+    [[ -z "$key_value" ]] && error "Valeur requise"
+    add_key "$key_name" "$key_value"
+}
+
+# Mode direct avec avertissement
+direct_mode() {
+    warn "La clé sera visible dans l'historique du shell et la table des processus."
+    echo -e "${RED}\033[1mIl est recommandé d'utiliser le mode interactif (sans arguments).${NC}"
+    read -p "Continuer quand même ? (o/N) " -n 1 -r
+    echo
+    [[ $REPLY =~ ^[Oo]$ ]] || error "Opération annulée"
+    add_key "$1" "$2"
+}
+
+# Main
+case "${1:-}" in
+    -h|--help) show_help ;;
+    -l|--list) list_keys ;;
+    -d|--delete) delete_key "$2" ;;
+    "") interactive_mode ;;
+    *) [[ -n "$2" ]] && direct_mode "$1" "$2" || error "Arguments invalides (-h pour l'aide)" ;;
+esac

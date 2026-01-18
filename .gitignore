@@ -1,0 +1,9 @@
+# Claude Code settings
+.claude/
+
+# macOS
+.DS_Store
+
+# API keys (ne devrait jamais exister ici)
+.env
+*.env
