@@ -1,6 +1,6 @@
 # ClaudeToolBox
 
-Trousse à outils d'utilitaires organisés par catégorie.
+Trousse à outils d'utilitaires MacOS pour Claude Code, organisés par catégorie.
 
 ## Arborescence
 
