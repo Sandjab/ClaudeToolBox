@@ -1,0 +1,629 @@
+#!/bin/bash
+# conversation-export - Outil d'export de conversations Claude Code
+# Permet de naviguer et exporter les conversations en Markdown
+
+set -euo pipefail
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Couleurs et constantes
+# ─────────────────────────────────────────────────────────────────────────────
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+DIM='\033[2m'
+NC='\033[0m'
+
+CLAUDE_DIR="$HOME/.claude/projects"
+VERSION="1.0.0"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Fonctions utilitaires
+# ─────────────────────────────────────────────────────────────────────────────
+info() { echo -e "${GREEN}[INFO]${NC} $1"; }
+warn() { echo -e "${YELLOW}[WARN]${NC} $1" >&2; }
+error() { echo -e "${RED}[ERREUR]${NC} $1" >&2; exit 1; }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Vérification des dépendances
+# ─────────────────────────────────────────────────────────────────────────────
+check_dependencies() {
+    if ! command -v jq &>/dev/null; then
+        error "jq est requis. Installez-le avec: brew install jq"
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Aide
+# ─────────────────────────────────────────────────────────────────────────────
+show_help() {
+    cat << EOF
+${BOLD}conversation-export${NC} - Export de conversations Claude Code
+
+${BOLD}USAGE${NC}
+    conversation-export [OPTIONS]
+
+${BOLD}OPTIONS${NC}
+    (aucune)            Mode interactif (fzf si disponible, sinon TUI)
+    -l, --list          Liste les conversations (sans interactivité)
+    -e, --export <id>   Exporte directement la conversation #id
+    -o, --output <file> Fichier de sortie (défaut: <slug>.md ou stdout)
+    --with-code         Inclut les blocs de code (défaut: texte seul)
+    --project <name>    Filtre par nom de projet
+    --no-fzf            Force le TUI intégré (désactive fzf)
+    -h, --help          Affiche cette aide
+    -v, --version       Affiche la version
+
+${BOLD}EXEMPLES${NC}
+    conversation-export              # Mode interactif
+    conversation-export -l           # Liste toutes les conversations
+    conversation-export -e 3         # Exporte la conversation #3
+    conversation-export -e 1 -o conv.md --with-code
+
+${BOLD}FORMAT DE SORTIE${NC}
+    Le fichier Markdown généré contient :
+    - Titre (slug ou premier message)
+    - Métadonnées (projet, date)
+    - Messages alternés Utilisateur/Claude
+
+EOF
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Extraction du nom de projet depuis le chemin encodé
+# ─────────────────────────────────────────────────────────────────────────────
+decode_project_name() {
+    local encoded_path="$1"
+    # Le chemin est encodé avec des tirets remplaçant les /
+    # Ex: -Users-jean-paul-ClaudeToolBox -> ClaudeToolBox
+    local decoded
+    decoded=$(echo "$encoded_path" | sed 's/-/\//g')
+    # Extraire le dernier composant (nom du projet)
+    basename "$decoded"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Extraction des informations d'une conversation
+# ─────────────────────────────────────────────────────────────────────────────
+get_conversation_info() {
+    local jsonl_file="$1"
+    local project_dir
+    project_dir=$(dirname "$jsonl_file")
+    project_dir=$(basename "$project_dir")
+
+    local project_name
+    project_name=$(decode_project_name "$project_dir")
+
+    # Extraire le timestamp depuis les entrées user ou progress (pas file-history-snapshot)
+    local timestamp
+    timestamp=$(grep -m1 '"type":"user"\|"type":"progress"' "$jsonl_file" 2>/dev/null | jq -r '.timestamp // empty' 2>/dev/null || echo "")
+    local date_str="inconnu"
+    if [[ -n "$timestamp" && "$timestamp" != "null" ]]; then
+        date_str=$(echo "$timestamp" | cut -d'T' -f1)
+    fi
+
+    # Chercher le slug dans les entrées (peut être dans progress ou user)
+    local slug
+    slug=$(grep -m1 '"slug":' "$jsonl_file" 2>/dev/null | jq -r '.slug // empty' 2>/dev/null | head -1 || echo "")
+
+    # Si pas de slug, prendre le début du premier message utilisateur
+    local title="$slug"
+    if [[ -z "$title" || "$title" == "null" ]]; then
+        local first_user_msg
+        first_user_msg=$(grep '"type":"user"' "$jsonl_file" 2>/dev/null | head -1 || echo "")
+        if [[ -n "$first_user_msg" ]]; then
+            # Extraire le contenu du message
+            local content
+            content=$(echo "$first_user_msg" | jq -r '
+                if .message.content | type == "string" then
+                    .message.content
+                elif .message.content | type == "array" then
+                    [.message.content[] | select(.type == "text") | .text] | first // ""
+                else
+                    ""
+                end
+            ' 2>/dev/null || echo "")
+            # Supprimer les balises XML type <local-command-caveat>
+            content=$(echo "$content" | sed 's/<[^>]*>//g')
+            # Nettoyer les espaces multiples
+            content=$(echo "$content" | tr -s ' ' | sed 's/^ *//')
+            # Tronquer à 40 caractères
+            title=$(echo "$content" | tr '\n' ' ' | cut -c1-40)
+            [[ ${#content} -gt 40 ]] && title="${title}..."
+        fi
+    fi
+
+    [[ -z "$title" ]] && title="(sans titre)"
+
+    # Retourner: fichier|date|projet|titre
+    echo "${jsonl_file}|${date_str}|${project_name}|${title}"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Liste toutes les conversations
+# ─────────────────────────────────────────────────────────────────────────────
+list_conversations() {
+    local project_filter="${1:-}"
+    local conversations=()
+
+    if [[ ! -d "$CLAUDE_DIR" ]]; then
+        error "Répertoire Claude Code non trouvé: $CLAUDE_DIR"
+    fi
+
+    # Trouver tous les fichiers .jsonl
+    while IFS= read -r -d '' jsonl_file; do
+        local info
+        info=$(get_conversation_info "$jsonl_file")
+
+        # Filtrer par projet si demandé
+        if [[ -n "$project_filter" ]]; then
+            local proj
+            proj=$(echo "$info" | cut -d'|' -f3)
+            if [[ "$proj" != *"$project_filter"* ]]; then
+                continue
+            fi
+        fi
+
+        conversations+=("$info")
+    done < <(find "$CLAUDE_DIR" -name "*.jsonl" -type f -print0 2>/dev/null | sort -z)
+
+    # Trier par date décroissante (plus récent en premier)
+    IFS=$'\n' conversations=($(printf '%s\n' "${conversations[@]}" | sort -t'|' -k2 -r))
+    unset IFS
+
+    printf '%s\n' "${conversations[@]}"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Affichage formaté de la liste
+# ─────────────────────────────────────────────────────────────────────────────
+print_conversation_list() {
+    local -a conversations=("$@")
+    local count=${#conversations[@]}
+
+    echo -e "\n${BOLD}Conversations Claude Code${NC} (${count} trouvées)"
+    echo "─────────────────────────────────────────────────────────────────────────"
+    printf "${DIM}  # │ Date       │ Projet              │ Titre${NC}\n"
+    echo "────┼────────────┼─────────────────────┼──────────────────────────────────"
+
+    local i=1
+    for conv in "${conversations[@]}"; do
+        local date proj title
+        date=$(echo "$conv" | cut -d'|' -f2)
+        proj=$(echo "$conv" | cut -d'|' -f3)
+        title=$(echo "$conv" | cut -d'|' -f4)
+
+        # Tronquer projet et titre si nécessaire
+        [[ ${#proj} -gt 19 ]] && proj="${proj:0:16}..."
+        [[ ${#title} -gt 34 ]] && title="${title:0:31}..."
+
+        printf "%3d │ %-10s │ %-19s │ %s\n" "$i" "$date" "$proj" "$title"
+        ((i++))
+    done
+    echo ""
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TUI interactif avec navigation flèches
+# ─────────────────────────────────────────────────────────────────────────────
+interactive_select() {
+    local -a conversations=("$@")
+    local count=${#conversations[@]}
+    local selected=0
+    local visible_start=0
+    local visible_count=15  # Nombre de lignes visibles
+
+    if [[ $count -eq 0 ]]; then
+        warn "Aucune conversation trouvée."
+        return 1
+    fi
+
+    # Sauvegarder les paramètres du terminal
+    local old_tty_settings
+    old_tty_settings=$(stty -g)
+
+    # Fonction de nettoyage
+    cleanup() {
+        stty "$old_tty_settings"
+        tput cnorm  # Afficher le curseur
+        echo ""
+    }
+    trap cleanup EXIT
+
+    # Masquer le curseur
+    tput civis
+
+    # Boucle principale
+    while true; do
+        # Effacer l'écran et positionner en haut
+        clear
+
+        echo -e "${BOLD}Conversations Claude Code${NC} (${count} trouvées)"
+        echo "─────────────────────────────────────────────────────────────────────────"
+        printf "${DIM}  # │ Date       │ Projet              │ Titre${NC}\n"
+        echo "────┼────────────┼─────────────────────┼──────────────────────────────────"
+
+        # Ajuster la fenêtre visible
+        if [[ $selected -lt $visible_start ]]; then
+            visible_start=$selected
+        elif [[ $selected -ge $((visible_start + visible_count)) ]]; then
+            visible_start=$((selected - visible_count + 1))
+        fi
+
+        # Afficher les conversations visibles
+        local end=$((visible_start + visible_count))
+        [[ $end -gt $count ]] && end=$count
+
+        for ((i = visible_start; i < end; i++)); do
+            local conv="${conversations[$i]}"
+            local date proj title
+            date=$(echo "$conv" | cut -d'|' -f2)
+            proj=$(echo "$conv" | cut -d'|' -f3)
+            title=$(echo "$conv" | cut -d'|' -f4)
+
+            # Tronquer si nécessaire
+            [[ ${#proj} -gt 19 ]] && proj="${proj:0:16}..."
+            [[ ${#title} -gt 34 ]] && title="${title:0:31}..."
+
+            local num=$((i + 1))
+            if [[ $i -eq $selected ]]; then
+                # Ligne sélectionnée
+                echo -e "${CYAN}${BOLD}▶${NC} ${CYAN}${num}${NC} │ ${CYAN}${date}${NC} │ ${CYAN}${proj}${NC} │ ${CYAN}${BOLD}${title}${NC}"
+            else
+                printf "  %d │ %-10s │ %-19s │ %s\n" "$num" "$date" "$proj" "$title"
+            fi
+        done
+
+        # Indicateurs de scroll
+        if [[ $visible_start -gt 0 ]]; then
+            echo -e "${DIM}  ↑ (plus de conversations au-dessus)${NC}"
+        fi
+        if [[ $end -lt $count ]]; then
+            echo -e "${DIM}  ↓ (plus de conversations en-dessous)${NC}"
+        fi
+
+        echo ""
+        echo -e "${DIM}[↑/↓] Naviguer  [Enter] Exporter  [q] Quitter${NC}"
+
+        # Lire une touche
+        stty raw -echo
+        local key
+        key=$(dd bs=3 count=1 2>/dev/null)
+        stty "$old_tty_settings"
+
+        case "$key" in
+            $'\x1b[A'|k)  # Flèche haut ou k
+                ((selected > 0)) && ((selected--))
+                ;;
+            $'\x1b[B'|j)  # Flèche bas ou j
+                ((selected < count - 1)) && ((selected++))
+                ;;
+            $'\x1b[5~')  # Page Up
+                ((selected -= visible_count))
+                ((selected < 0)) && selected=0
+                ;;
+            $'\x1b[6~')  # Page Down
+                ((selected += visible_count))
+                ((selected >= count)) && selected=$((count - 1))
+                ;;
+            ''|$'\n')  # Enter
+                # Retourner le fichier sélectionné
+                echo "${conversations[$selected]}" | cut -d'|' -f1
+                return 0
+                ;;
+            q|Q)  # Quitter
+                return 1
+                ;;
+        esac
+    done
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sélection avec fzf (recherche floue)
+# ─────────────────────────────────────────────────────────────────────────────
+fzf_select() {
+    local -a conversations=("$@")
+    local count=${#conversations[@]}
+
+    if [[ $count -eq 0 ]]; then
+        warn "Aucune conversation trouvée."
+        return 1
+    fi
+
+    # Construire la liste formatée pour fzf
+    local -a formatted=()
+    local i=1
+    for conv in "${conversations[@]}"; do
+        local date proj title
+        date=$(echo "$conv" | cut -d'|' -f2)
+        proj=$(echo "$conv" | cut -d'|' -f3)
+        title=$(echo "$conv" | cut -d'|' -f4)
+
+        # Tronquer si nécessaire
+        [[ ${#proj} -gt 19 ]] && proj="${proj:0:16}..."
+        [[ ${#title} -gt 40 ]] && title="${title:0:37}..."
+
+        formatted+=("$(printf "%3d │ %-10s │ %-19s │ %s" "$i" "$date" "$proj" "$title")")
+        ((i++))
+    done
+
+    # Lancer fzf avec les options de présentation
+    local selection
+    selection=$(printf '%s\n' "${formatted[@]}" | fzf \
+        --height=80% \
+        --layout=reverse \
+        --border \
+        --header="Conversations Claude Code (${count} trouvées) - Tapez pour filtrer" \
+        --prompt="❯ " \
+        --pointer="▶" \
+        --marker="●" \
+        --ansi \
+        --no-mouse \
+        --bind='ctrl-c:abort' \
+        --preview-window=hidden \
+    ) || return 1
+
+    # Extraire le numéro de la sélection
+    local selected_num
+    selected_num=$(echo "$selection" | awk '{print $1}')
+
+    # Valider et retourner le fichier correspondant
+    if [[ -n "$selected_num" && "$selected_num" =~ ^[0-9]+$ ]]; then
+        local idx=$((selected_num - 1))
+        echo "${conversations[$idx]}" | cut -d'|' -f1
+        return 0
+    fi
+
+    return 1
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Extraction et formatage du contenu d'un message
+# ─────────────────────────────────────────────────────────────────────────────
+extract_text_content() {
+    local message="$1"
+    local with_code="${2:-false}"
+
+    # Le contenu peut être une string ou un array
+    local content
+    content=$(echo "$message" | jq -r '
+        if .message.content | type == "string" then
+            .message.content
+        elif .message.content | type == "array" then
+            [.message.content[] |
+                if .type == "text" then
+                    .text
+                elif .type == "tool_result" then
+                    if .content | type == "string" then
+                        .content
+                    elif .content | type == "array" then
+                        [.content[] | select(.type == "text") | .text] | join("\n")
+                    else
+                        empty
+                    end
+                else
+                    empty
+                end
+            ] | join("\n")
+        else
+            empty
+        end
+    ' 2>/dev/null || echo "")
+
+    if [[ "$with_code" == "false" ]]; then
+        # Supprimer les blocs de code mais garder les inline code
+        # On supprime les blocs ``` ... ``` sur plusieurs lignes
+        content=$(echo "$content" | perl -0777 -pe 's/```[a-z]*\n[\s\S]*?```//g' 2>/dev/null || echo "$content")
+    fi
+
+    # Nettoyer les lignes vides multiples
+    content=$(echo "$content" | sed '/^$/N;/^\n$/d')
+
+    echo "$content"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Export d'une conversation en Markdown
+# ─────────────────────────────────────────────────────────────────────────────
+export_conversation() {
+    local jsonl_file="$1"
+    local output_file="${2:-}"
+    local with_code="${3:-false}"
+
+    if [[ ! -f "$jsonl_file" ]]; then
+        error "Fichier non trouvé: $jsonl_file"
+    fi
+
+    # Extraire les métadonnées
+    local info
+    info=$(get_conversation_info "$jsonl_file")
+    local date_str proj title
+    date_str=$(echo "$info" | cut -d'|' -f2)
+    proj=$(echo "$info" | cut -d'|' -f3)
+    title=$(echo "$info" | cut -d'|' -f4)
+
+    # Générer le nom de fichier si non spécifié
+    if [[ -z "$output_file" ]]; then
+        local safe_title
+        safe_title=$(echo "$title" | tr -cd '[:alnum:]-_' | cut -c1-50)
+        [[ -z "$safe_title" ]] && safe_title="conversation"
+        output_file="${safe_title}.md"
+    fi
+
+    # Générer le contenu Markdown
+    local md_content=""
+    md_content+="# Conversation: ${title}\n\n"
+    md_content+="**Projet**: ${proj}  \n"
+    md_content+="**Date**: ${date_str}\n\n"
+    md_content+="---\n\n"
+
+    # Lire et traiter les messages
+    local prev_role=""
+    while IFS= read -r line; do
+        # Ignorer les lignes vides
+        [[ -z "$line" ]] && continue
+
+        # Extraire le type et le rôle
+        local msg_type role
+        msg_type=$(echo "$line" | jq -r '.type // empty' 2>/dev/null || echo "")
+        role=$(echo "$line" | jq -r '.message.role // empty' 2>/dev/null || echo "")
+
+        # Ne traiter que les messages user et assistant
+        if [[ "$msg_type" != "user" && "$msg_type" != "assistant" ]]; then
+            continue
+        fi
+
+        # Extraire le contenu texte
+        local content
+        content=$(extract_text_content "$line" "$with_code")
+
+        # Ignorer les messages vides
+        [[ -z "$content" || "$content" =~ ^[[:space:]]*$ ]] && continue
+
+        # Ignorer les messages internes/système
+        if [[ "$content" =~ ^\<local-command || "$content" =~ ^\<command-name || \
+              "$content" =~ ^\[Request\ interrupted || "$content" =~ ^\<local-command-stdout ]]; then
+            continue
+        fi
+
+        # Formater selon le rôle
+        if [[ "$role" == "user" ]]; then
+            md_content+="\n**Utilisateur** :\n\n${content}\n"
+        elif [[ "$role" == "assistant" ]]; then
+            md_content+="\n*Claude* :\n\n${content}\n"
+        fi
+
+        prev_role="$role"
+    done < "$jsonl_file"
+
+    # Écrire le fichier
+    if [[ "$output_file" == "-" ]]; then
+        echo -e "$md_content"
+    else
+        echo -e "$md_content" > "$output_file"
+        info "Conversation exportée vers: ${output_file}"
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Parsing des arguments
+# ─────────────────────────────────────────────────────────────────────────────
+parse_args() {
+    MODE="interactive"
+    EXPORT_ID=""
+    OUTPUT_FILE=""
+    WITH_CODE="false"
+    PROJECT_FILTER=""
+    USE_FZF="auto"  # auto, true, false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_help
+                exit 0
+                ;;
+            -v|--version)
+                echo "conversation-export version $VERSION"
+                exit 0
+                ;;
+            -l|--list)
+                MODE="list"
+                shift
+                ;;
+            -e|--export)
+                MODE="export"
+                if [[ -z "${2:-}" || "$2" =~ ^- ]]; then
+                    error "L'option -e/--export nécessite un numéro de conversation"
+                fi
+                # Valider que c'est un nombre
+                if ! [[ "$2" =~ ^[0-9]+$ ]]; then
+                    error "L'identifiant de conversation doit être un nombre"
+                fi
+                EXPORT_ID="$2"
+                shift 2
+                ;;
+            -o|--output)
+                if [[ -z "${2:-}" || "$2" =~ ^- ]]; then
+                    error "L'option -o/--output nécessite un nom de fichier"
+                fi
+                OUTPUT_FILE="$2"
+                shift 2
+                ;;
+            --with-code)
+                WITH_CODE="true"
+                shift
+                ;;
+            --project)
+                if [[ -z "${2:-}" || "$2" =~ ^- ]]; then
+                    error "L'option --project nécessite un nom de projet"
+                fi
+                PROJECT_FILTER="$2"
+                shift 2
+                ;;
+            --no-fzf)
+                USE_FZF="false"
+                shift
+                ;;
+            *)
+                error "Option inconnue: $1. Utilisez -h pour l'aide."
+                ;;
+        esac
+    done
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main
+# ─────────────────────────────────────────────────────────────────────────────
+main() {
+    check_dependencies
+    parse_args "$@"
+
+    # Charger la liste des conversations (compatible bash 3.x)
+    local -a conversations=()
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && conversations+=("$line")
+    done < <(list_conversations "$PROJECT_FILTER")
+
+    case "$MODE" in
+        list)
+            if [[ ${#conversations[@]} -eq 0 ]]; then
+                warn "Aucune conversation trouvée."
+                exit 0
+            fi
+            print_conversation_list "${conversations[@]}"
+            ;;
+        export)
+            if [[ ${#conversations[@]} -eq 0 ]]; then
+                error "Aucune conversation trouvée."
+            fi
+            if [[ $EXPORT_ID -lt 1 || $EXPORT_ID -gt ${#conversations[@]} ]]; then
+                error "Numéro de conversation invalide: $EXPORT_ID (1-${#conversations[@]})"
+            fi
+            local idx=$((EXPORT_ID - 1))
+            local file
+            file=$(echo "${conversations[$idx]}" | cut -d'|' -f1)
+            export_conversation "$file" "$OUTPUT_FILE" "$WITH_CODE"
+            ;;
+        interactive)
+            if [[ ${#conversations[@]} -eq 0 ]]; then
+                warn "Aucune conversation trouvée."
+                exit 0
+            fi
+            local selected_file
+            # Utiliser fzf si disponible et non désactivé
+            if [[ "$USE_FZF" != "false" ]] && command -v fzf &>/dev/null; then
+                selected_file=$(fzf_select "${conversations[@]}") || exit 0
+            else
+                selected_file=$(interactive_select "${conversations[@]}") || exit 0
+            fi
+            if [[ -n "$selected_file" ]]; then
+                clear
+                export_conversation "$selected_file" "$OUTPUT_FILE" "$WITH_CODE"
+            fi
+            ;;
+    esac
+}
+
+main "$@"
