@@ -600,9 +600,9 @@ export_conversation() {
                     note_buffer=""
                 fi
 
-                # Message utilisateur en bloc CAUTION
+                # Message utilisateur en bloc CAUTION avec texte en H4
                 local quoted_content
-                quoted_content=$(echo "$content" | sed 's/^/> /')
+                quoted_content=$(echo "$content" | sed 's/^/> #### /')
                 md_content+="\n> [!CAUTION]\n${quoted_content}\n"
             fi
         elif [[ "$role" == "assistant" ]]; then
