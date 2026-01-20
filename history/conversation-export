@@ -17,7 +17,7 @@ DIM='\033[2m'
 NC='\033[0m'
 
 CLAUDE_DIR="$HOME/.claude/projects"
-VERSION="1.0.0"
+VERSION="1.1.0"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Fonctions utilitaires
@@ -53,6 +53,8 @@ ${BOLD}OPTIONS${NC}
     --with-code         Inclut les blocs de code (défaut: texte seul)
     --project <name>    Filtre par nom de projet
     --no-fzf            Force le TUI intégré (désactive fzf)
+    --max-output-lines <N>  Limite de lignes pour les outputs (défaut: 30)
+    --include-agents    Inclure les résultats d'agents (défaut: exclus)
     -h, --help          Affiche cette aide
     -v, --version       Affiche la version
 
@@ -61,12 +63,14 @@ ${BOLD}EXEMPLES${NC}
     conversation-export -l           # Liste toutes les conversations
     conversation-export -e 3         # Exporte la conversation #3
     conversation-export -e 1 -o conv.md --with-code
+    conversation-export -e 1 --max-output-lines 50 --include-agents
 
 ${BOLD}FORMAT DE SORTIE${NC}
     Le fichier Markdown généré contient :
     - Titre (slug ou premier message)
     - Métadonnées (projet, date)
     - Messages alternés Utilisateur/Claude
+    - Tool outputs dans des blocs <details> collapsibles
 
 EOF
 }
@@ -380,6 +384,69 @@ fzf_select() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Détection des résultats d'agents
+# ─────────────────────────────────────────────────────────────────────────────
+is_agent_result() {
+    local content="$1"
+    local line_count
+    line_count=$(printf '%s' "$content" | wc -l | tr -d '[:space:]')
+
+    # Assurer que line_count est un nombre valide
+    [[ -z "$line_count" || ! "$line_count" =~ ^[0-9]+$ ]] && line_count=0
+
+    # Patterns typiques des rapports d'agents (rapport structuré avec headers Markdown)
+    if [[ $line_count -gt 20 ]]; then
+        # Vérifie si ça commence par un header markdown ou séparateur
+        if [[ "$content" =~ ^(#+[[:space:]]|---|\*\*[A-Z]) ]]; then
+            return 0  # C'est probablement un agent
+        fi
+        # Vérifie la présence de multiples headers (signe d'un rapport structuré)
+        local header_count
+        header_count=$(printf '%s' "$content" | grep -c '^#' 2>/dev/null || echo "0")
+        header_count=$(echo "$header_count" | tr -d '[:space:]')
+        [[ -z "$header_count" || ! "$header_count" =~ ^[0-9]+$ ]] && header_count=0
+        if [[ $header_count -gt 3 ]]; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Troncature des contenus volumineux
+# ─────────────────────────────────────────────────────────────────────────────
+truncate_content() {
+    local content="$1"
+    local max_lines="${2:-30}"
+    local line_count
+    line_count=$(printf '%s' "$content" | wc -l | tr -d '[:space:]')
+
+    # Assurer que line_count est un nombre valide
+    [[ -z "$line_count" || ! "$line_count" =~ ^[0-9]+$ ]] && line_count=0
+
+    if [[ $max_lines -gt 0 && $line_count -gt $max_lines ]]; then
+        local head_lines=10
+        local tail_lines=5
+        local truncated=$((line_count - head_lines - tail_lines))
+        printf '%s' "$content" | head -n $head_lines
+        echo ""
+        echo "[... $truncated lignes tronquées ...]"
+        echo ""
+        printf '%s' "$content" | tail -n $tail_lines
+    else
+        printf '%s\n' "$content"
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Détection des tool_results dans un message
+# ─────────────────────────────────────────────────────────────────────────────
+has_tool_result() {
+    local message="$1"
+    echo "$message" | jq -e '.message.content | type == "array" and any(.[]; .type == "tool_result")' &>/dev/null
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Extraction et formatage du contenu d'un message
 # ─────────────────────────────────────────────────────────────────────────────
 extract_text_content() {
@@ -431,6 +498,8 @@ export_conversation() {
     local jsonl_file="$1"
     local output_file="${2:-}"
     local with_code="${3:-false}"
+    local max_output_lines="${4:-30}"
+    local include_agents="${5:-false}"
 
     if [[ ! -f "$jsonl_file" ]]; then
         error "Fichier non trouvé: $jsonl_file"
@@ -490,7 +559,26 @@ export_conversation() {
 
         # Formater selon le rôle
         if [[ "$role" == "user" ]]; then
-            md_content+="\n**Utilisateur** :\n\n${content}\n"
+            # Vérifier si c'est un tool_result
+            if has_tool_result "$line"; then
+                # Vérifier si c'est un résultat d'agent
+                if is_agent_result "$content"; then
+                    if [[ "$include_agents" != "true" ]]; then
+                        # Exclure les résultats d'agents (sauf si --include-agents)
+                        continue
+                    fi
+                fi
+
+                # Tronquer le contenu si nécessaire
+                local truncated_content
+                truncated_content=$(truncate_content "$content" "$max_output_lines")
+
+                # Formater dans un bloc collapsible
+                md_content+="\n<details>\n<summary>Output</summary>\n\n\`\`\`\n${truncated_content}\n\`\`\`\n\n</details>\n"
+            else
+                # Message utilisateur normal
+                md_content+="\n**Utilisateur** :\n\n${content}\n"
+            fi
         elif [[ "$role" == "assistant" ]]; then
             md_content+="\n*Claude* :\n\n${content}\n"
         fi
@@ -517,6 +605,8 @@ parse_args() {
     WITH_CODE="false"
     PROJECT_FILTER=""
     USE_FZF="auto"  # auto, true, false
+    MAX_OUTPUT_LINES="30"  # Limite de lignes pour outputs
+    INCLUDE_AGENTS="false"  # Inclure résultats d'agents
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -566,6 +656,20 @@ parse_args() {
                 USE_FZF="false"
                 shift
                 ;;
+            --max-output-lines)
+                if [[ -z "${2:-}" || "$2" =~ ^- ]]; then
+                    error "L'option --max-output-lines nécessite un nombre"
+                fi
+                if ! [[ "$2" =~ ^[0-9]+$ ]]; then
+                    error "La valeur de --max-output-lines doit être un nombre"
+                fi
+                MAX_OUTPUT_LINES="$2"
+                shift 2
+                ;;
+            --include-agents)
+                INCLUDE_AGENTS="true"
+                shift
+                ;;
             *)
                 error "Option inconnue: $1. Utilisez -h pour l'aide."
                 ;;
@@ -604,7 +708,7 @@ main() {
             local idx=$((EXPORT_ID - 1))
             local file
             file=$(echo "${conversations[$idx]}" | cut -d'|' -f1)
-            export_conversation "$file" "$OUTPUT_FILE" "$WITH_CODE"
+            export_conversation "$file" "$OUTPUT_FILE" "$WITH_CODE" "$MAX_OUTPUT_LINES" "$INCLUDE_AGENTS"
             ;;
         interactive)
             if [[ ${#conversations[@]} -eq 0 ]]; then
@@ -620,7 +724,7 @@ main() {
             fi
             if [[ -n "$selected_file" ]]; then
                 clear
-                export_conversation "$selected_file" "$OUTPUT_FILE" "$WITH_CODE"
+                export_conversation "$selected_file" "$OUTPUT_FILE" "$WITH_CODE" "$MAX_OUTPUT_LINES" "$INCLUDE_AGENTS"
             fi
             ;;
     esac
