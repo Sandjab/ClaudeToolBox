@@ -575,15 +575,21 @@ export_conversation() {
                 fi
 
                 # Ajouter l'output dans le note_buffer (intégré au tour de Claude)
-                if [[ -n "$note_buffer" ]]; then
-                    note_buffer+=$'\n\n'
-                fi
                 if [[ "$show_outputs" == "true" ]]; then
+                    if [[ -n "$note_buffer" ]]; then
+                        note_buffer+=$'\n\n'
+                    fi
                     local truncated_output
                     truncated_output=$(truncate_content "$content" "$max_output_lines")
                     note_buffer+='```'$'\n'"${truncated_output}"$'\n''```'
                 else
-                    note_buffer+="..."
+                    # Ne pas ajouter "..." si le buffer se termine déjà par "..."
+                    if [[ ! "$note_buffer" =~ \.\.\.$ ]]; then
+                        if [[ -n "$note_buffer" ]]; then
+                            note_buffer+=$'\n\n'
+                        fi
+                        note_buffer+="..."
+                    fi
                 fi
             else
                 # Flush les notes accumulées avant le message utilisateur
