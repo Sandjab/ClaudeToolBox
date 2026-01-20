@@ -557,6 +557,9 @@ export_conversation() {
     local output_buffer=""
     local output_count=0
 
+    # Buffer pour merger les réponses Claude consécutives
+    local note_buffer=""
+
     # Lire et traiter les messages
     while IFS= read -r line; do
         # Ignorer les lignes vides
@@ -597,19 +600,36 @@ export_conversation() {
                     fi
                 fi
 
-                # Accumuler dans le buffer
+                # Flush les notes accumulées avant l'output
+                if [[ -n "$note_buffer" ]]; then
+                    local quoted_notes
+                    quoted_notes=$(echo "$note_buffer" | sed 's/^/> /')
+                    md_content+="\n> [!NOTE]\n${quoted_notes}\n"
+                    note_buffer=""
+                fi
+
+                # Accumuler dans le buffer d'outputs
                 if [[ -n "$output_buffer" ]]; then
                     output_buffer+=$'\n---\n'
                 fi
                 output_buffer+="$content"
                 ((output_count++))
             else
+                # Flush les notes accumulées avant le message utilisateur
+                if [[ -n "$note_buffer" ]]; then
+                    local quoted_notes
+                    quoted_notes=$(echo "$note_buffer" | sed 's/^/> /')
+                    md_content+="\n> [!NOTE]\n${quoted_notes}\n"
+                    note_buffer=""
+                fi
+
                 # Flush les outputs accumulés avant le message utilisateur
                 if [[ -n "$output_buffer" ]]; then
                     md_content+=$(flush_outputs "$output_buffer" "$output_count" "$show_outputs" "$max_output_lines")
                     output_buffer=""
                     output_count=0
                 fi
+
                 # Message utilisateur en bloc CAUTION
                 local quoted_content
                 quoted_content=$(echo "$content" | sed 's/^/> /')
@@ -622,12 +642,21 @@ export_conversation() {
                 output_buffer=""
                 output_count=0
             fi
-            # Réponse Claude en bloc NOTE
-            local quoted_response
-            quoted_response=$(echo "$content" | sed 's/^/> /')
-            md_content+="\n> [!NOTE]\n${quoted_response}\n"
+
+            # Accumuler la réponse Claude dans le buffer
+            if [[ -n "$note_buffer" ]]; then
+                note_buffer+=$'\n\n'
+            fi
+            note_buffer+="$content"
         fi
     done < "$jsonl_file"
+
+    # Flush final si notes restantes
+    if [[ -n "$note_buffer" ]]; then
+        local quoted_notes
+        quoted_notes=$(echo "$note_buffer" | sed 's/^/> /')
+        md_content+="\n> [!NOTE]\n${quoted_notes}\n"
+    fi
 
     # Flush final si outputs restants
     if [[ -n "$output_buffer" ]]; then
