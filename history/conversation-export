@@ -494,28 +494,6 @@ extract_text_content() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Flush des outputs accumulés
-# ─────────────────────────────────────────────────────────────────────────────
-flush_outputs() {
-    local buffer="$1"
-    local count="$2"
-    local show="$3"
-    local max_lines="$4"
-
-    if [[ -z "$buffer" ]]; then
-        return
-    fi
-
-    if [[ "$show" == "true" ]]; then
-        local truncated_content
-        truncated_content=$(truncate_content "$buffer" "$max_lines")
-        echo -e "\n<details>\n<summary>Output (${count})</summary>\n\n\`\`\`\n${truncated_content}\n\`\`\`\n\n</details>\n"
-    else
-        echo -e "\n...\n"
-    fi
-}
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Export d'une conversation en Markdown
 # ─────────────────────────────────────────────────────────────────────────────
 export_conversation() {
@@ -553,11 +531,7 @@ export_conversation() {
     md_content+="**Date**: ${date_str}\n\n"
     md_content+="---\n\n"
 
-    # Buffer pour merger les outputs consécutifs
-    local output_buffer=""
-    local output_count=0
-
-    # Buffer pour merger les réponses Claude consécutives
+    # Buffer pour merger les réponses Claude et outputs consécutifs
     local note_buffer=""
 
     # Lire et traiter les messages
@@ -600,20 +574,17 @@ export_conversation() {
                     fi
                 fi
 
-                # Flush les notes accumulées avant l'output
+                # Ajouter l'output dans le note_buffer (intégré au tour de Claude)
                 if [[ -n "$note_buffer" ]]; then
-                    local quoted_notes
-                    quoted_notes=$(echo "$note_buffer" | sed 's/^/> /')
-                    md_content+="\n> [!NOTE]\n${quoted_notes}\n"
-                    note_buffer=""
+                    note_buffer+=$'\n\n'
                 fi
-
-                # Accumuler dans le buffer d'outputs
-                if [[ -n "$output_buffer" ]]; then
-                    output_buffer+=$'\n---\n'
+                if [[ "$show_outputs" == "true" ]]; then
+                    local truncated_output
+                    truncated_output=$(truncate_content "$content" "$max_output_lines")
+                    note_buffer+='```'$'\n'"${truncated_output}"$'\n''```'
+                else
+                    note_buffer+="..."
                 fi
-                output_buffer+="$content"
-                ((output_count++))
             else
                 # Flush les notes accumulées avant le message utilisateur
                 if [[ -n "$note_buffer" ]]; then
@@ -623,26 +594,12 @@ export_conversation() {
                     note_buffer=""
                 fi
 
-                # Flush les outputs accumulés avant le message utilisateur
-                if [[ -n "$output_buffer" ]]; then
-                    md_content+=$(flush_outputs "$output_buffer" "$output_count" "$show_outputs" "$max_output_lines")
-                    output_buffer=""
-                    output_count=0
-                fi
-
                 # Message utilisateur en bloc CAUTION
                 local quoted_content
                 quoted_content=$(echo "$content" | sed 's/^/> /')
                 md_content+="\n> [!CAUTION]\n${quoted_content}\n"
             fi
         elif [[ "$role" == "assistant" ]]; then
-            # Flush les outputs accumulés avant la réponse Claude
-            if [[ -n "$output_buffer" ]]; then
-                md_content+=$(flush_outputs "$output_buffer" "$output_count" "$show_outputs" "$max_output_lines")
-                output_buffer=""
-                output_count=0
-            fi
-
             # Accumuler la réponse Claude dans le buffer
             if [[ -n "$note_buffer" ]]; then
                 note_buffer+=$'\n\n'
@@ -656,11 +613,6 @@ export_conversation() {
         local quoted_notes
         quoted_notes=$(echo "$note_buffer" | sed 's/^/> /')
         md_content+="\n> [!NOTE]\n${quoted_notes}\n"
-    fi
-
-    # Flush final si outputs restants
-    if [[ -n "$output_buffer" ]]; then
-        md_content+=$(flush_outputs "$output_buffer" "$output_count" "$show_outputs" "$max_output_lines")
     fi
 
     # Écrire le fichier
