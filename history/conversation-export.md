@@ -26,8 +26,22 @@ brew install jq
 brew install fzf
 
 # weasyprint (optionnel - requis pour export PDF)
+# Dépendances système (macOS)
+brew install pango glib gobject-introspection
+
+# Option 1 : avec l'environnement virtuel du projet
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# Option 2 : installation directe
 pip install weasyprint
 ```
+
+> [!NOTE]
+> Pour l'export PDF, `weasyprint` doit être accessible dans le PATH. Si vous utilisez l'environnement virtuel, activez-le avant d'exécuter le script ou ajoutez `.venv/bin` au PATH :
+> ```bash
+> PATH=".venv/bin:$PATH" ./conversation-export -f pdf -e 1
+> ```
 
 ## Installation
 

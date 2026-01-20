@@ -41,6 +41,13 @@ check_weasyprint() {
     fi
 }
 
+# Configure l'environnement pour WeasyPrint sur macOS (bibliothèques Homebrew)
+setup_weasyprint_env() {
+    if [[ "$(uname)" == "Darwin" ]] && [[ -d "/opt/homebrew/lib" ]]; then
+        export DYLD_LIBRARY_PATH="/opt/homebrew/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+    fi
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Aide
 # ─────────────────────────────────────────────────────────────────────────────
@@ -967,6 +974,7 @@ main() {
     # Vérifier WeasyPrint si export PDF demandé
     if [[ "$OUTPUT_FORMAT" == "pdf" ]]; then
         check_weasyprint
+        setup_weasyprint_env
     fi
 
     # Charger la liste des conversations (compatible bash 3.x)
