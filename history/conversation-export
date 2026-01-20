@@ -71,7 +71,7 @@ ${BOLD}FORMAT DE SORTIE${NC}
     - Titre (slug ou premier message)
     - Métadonnées (projet, date)
     - Messages utilisateur en bloc [!CAUTION]
-    - Réponses Claude en italique
+    - Réponses Claude en bloc [!NOTE]
     - Outputs masqués par défaut (--show-outputs pour afficher)
 
 EOF
@@ -622,8 +622,10 @@ export_conversation() {
                 output_buffer=""
                 output_count=0
             fi
-            # Réponse Claude en italique
-            md_content+="\n*${content}*\n"
+            # Réponse Claude en bloc NOTE
+            local quoted_response
+            quoted_response=$(echo "$content" | sed 's/^/> /')
+            md_content+="\n> [!NOTE]\n${quoted_response}\n"
         fi
     done < "$jsonl_file"
 
