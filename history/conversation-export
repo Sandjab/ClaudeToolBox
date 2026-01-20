@@ -17,7 +17,7 @@ DIM='\033[2m'
 NC='\033[0m'
 
 CLAUDE_DIR="$HOME/.claude/projects"
-VERSION="1.1.0"
+VERSION="1.2.0"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Fonctions utilitaires
@@ -55,6 +55,7 @@ ${BOLD}OPTIONS${NC}
     --no-fzf            Force le TUI intégré (désactive fzf)
     --max-output-lines <N>  Limite de lignes pour les outputs (défaut: 30)
     --include-agents    Inclure les résultats d'agents (défaut: exclus)
+    --show-outputs      Afficher les outputs (défaut: masqués avec "...")
     -h, --help          Affiche cette aide
     -v, --version       Affiche la version
 
@@ -69,8 +70,9 @@ ${BOLD}FORMAT DE SORTIE${NC}
     Le fichier Markdown généré contient :
     - Titre (slug ou premier message)
     - Métadonnées (projet, date)
-    - Messages alternés Utilisateur/Claude
-    - Tool outputs dans des blocs <details> collapsibles
+    - Messages utilisateur en gras
+    - Réponses Claude en italique
+    - Outputs masqués par défaut (--show-outputs pour afficher)
 
 EOF
 }
@@ -492,6 +494,28 @@ extract_text_content() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Flush des outputs accumulés
+# ─────────────────────────────────────────────────────────────────────────────
+flush_outputs() {
+    local buffer="$1"
+    local count="$2"
+    local show="$3"
+    local max_lines="$4"
+
+    if [[ -z "$buffer" ]]; then
+        return
+    fi
+
+    if [[ "$show" == "true" ]]; then
+        local truncated_content
+        truncated_content=$(truncate_content "$buffer" "$max_lines")
+        echo -e "\n<details>\n<summary>Output (${count})</summary>\n\n\`\`\`\n${truncated_content}\n\`\`\`\n\n</details>\n"
+    else
+        echo -e "\n...\n"
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Export d'une conversation en Markdown
 # ─────────────────────────────────────────────────────────────────────────────
 export_conversation() {
@@ -500,6 +524,7 @@ export_conversation() {
     local with_code="${3:-false}"
     local max_output_lines="${4:-30}"
     local include_agents="${5:-false}"
+    local show_outputs="${6:-false}"
 
     if [[ ! -f "$jsonl_file" ]]; then
         error "Fichier non trouvé: $jsonl_file"
@@ -528,8 +553,11 @@ export_conversation() {
     md_content+="**Date**: ${date_str}\n\n"
     md_content+="---\n\n"
 
+    # Buffer pour merger les outputs consécutifs
+    local output_buffer=""
+    local output_count=0
+
     # Lire et traiter les messages
-    local prev_role=""
     while IFS= read -r line; do
         # Ignorer les lignes vides
         [[ -z "$line" ]] && continue
@@ -569,22 +597,38 @@ export_conversation() {
                     fi
                 fi
 
-                # Tronquer le contenu si nécessaire
-                local truncated_content
-                truncated_content=$(truncate_content "$content" "$max_output_lines")
-
-                # Formater dans un bloc collapsible
-                md_content+="\n<details>\n<summary>Output</summary>\n\n\`\`\`\n${truncated_content}\n\`\`\`\n\n</details>\n"
+                # Accumuler dans le buffer
+                if [[ -n "$output_buffer" ]]; then
+                    output_buffer+=$'\n---\n'
+                fi
+                output_buffer+="$content"
+                ((output_count++))
             else
-                # Message utilisateur normal
-                md_content+="\n**Utilisateur** :\n\n${content}\n"
+                # Flush les outputs accumulés avant le message utilisateur
+                if [[ -n "$output_buffer" ]]; then
+                    md_content+=$(flush_outputs "$output_buffer" "$output_count" "$show_outputs" "$max_output_lines")
+                    output_buffer=""
+                    output_count=0
+                fi
+                # Message utilisateur en gras
+                md_content+="\n**${content}**\n"
             fi
         elif [[ "$role" == "assistant" ]]; then
-            md_content+="\n*Claude* :\n\n${content}\n"
+            # Flush les outputs accumulés avant la réponse Claude
+            if [[ -n "$output_buffer" ]]; then
+                md_content+=$(flush_outputs "$output_buffer" "$output_count" "$show_outputs" "$max_output_lines")
+                output_buffer=""
+                output_count=0
+            fi
+            # Réponse Claude en italique
+            md_content+="\n*${content}*\n"
         fi
-
-        prev_role="$role"
     done < "$jsonl_file"
+
+    # Flush final si outputs restants
+    if [[ -n "$output_buffer" ]]; then
+        md_content+=$(flush_outputs "$output_buffer" "$output_count" "$show_outputs" "$max_output_lines")
+    fi
 
     # Écrire le fichier
     if [[ "$output_file" == "-" ]]; then
@@ -607,6 +651,7 @@ parse_args() {
     USE_FZF="auto"  # auto, true, false
     MAX_OUTPUT_LINES="30"  # Limite de lignes pour outputs
     INCLUDE_AGENTS="false"  # Inclure résultats d'agents
+    SHOW_OUTPUTS="false"    # Afficher les outputs (sinon ...)
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -670,6 +715,10 @@ parse_args() {
                 INCLUDE_AGENTS="true"
                 shift
                 ;;
+            --show-outputs)
+                SHOW_OUTPUTS="true"
+                shift
+                ;;
             *)
                 error "Option inconnue: $1. Utilisez -h pour l'aide."
                 ;;
@@ -708,7 +757,7 @@ main() {
             local idx=$((EXPORT_ID - 1))
             local file
             file=$(echo "${conversations[$idx]}" | cut -d'|' -f1)
-            export_conversation "$file" "$OUTPUT_FILE" "$WITH_CODE" "$MAX_OUTPUT_LINES" "$INCLUDE_AGENTS"
+            export_conversation "$file" "$OUTPUT_FILE" "$WITH_CODE" "$MAX_OUTPUT_LINES" "$INCLUDE_AGENTS" "$SHOW_OUTPUTS"
             ;;
         interactive)
             if [[ ${#conversations[@]} -eq 0 ]]; then
@@ -724,7 +773,7 @@ main() {
             fi
             if [[ -n "$selected_file" ]]; then
                 clear
-                export_conversation "$selected_file" "$OUTPUT_FILE" "$WITH_CODE" "$MAX_OUTPUT_LINES" "$INCLUDE_AGENTS"
+                export_conversation "$selected_file" "$OUTPUT_FILE" "$WITH_CODE" "$MAX_OUTPUT_LINES" "$INCLUDE_AGENTS" "$SHOW_OUTPUTS"
             fi
             ;;
     esac
