@@ -70,7 +70,7 @@ ${BOLD}FORMAT DE SORTIE${NC}
     Le fichier Markdown généré contient :
     - Titre (slug ou premier message)
     - Métadonnées (projet, date)
-    - Messages utilisateur en gras
+    - Messages utilisateur en bloc [!CAUTION]
     - Réponses Claude en italique
     - Outputs masqués par défaut (--show-outputs pour afficher)
 
@@ -610,8 +610,10 @@ export_conversation() {
                     output_buffer=""
                     output_count=0
                 fi
-                # Message utilisateur en gras
-                md_content+="\n**${content}**\n"
+                # Message utilisateur en bloc CAUTION
+                local quoted_content
+                quoted_content=$(echo "$content" | sed 's/^/> /')
+                md_content+="\n> [!CAUTION]\n${quoted_content}\n"
             fi
         elif [[ "$role" == "assistant" ]]; then
             # Flush les outputs accumulés avant la réponse Claude
