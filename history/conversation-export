@@ -558,7 +558,8 @@ export_conversation() {
 
         # Ignorer les messages internes/système
         if [[ "$content" =~ ^\<local-command || "$content" =~ ^\<command-name || \
-              "$content" =~ ^\[Request\ interrupted || "$content" =~ ^\<local-command-stdout ]]; then
+              "$content" =~ ^\[Request\ interrupted || "$content" =~ ^\<local-command-stdout || \
+              "$content" =~ ^Implement\ the\ following\ plan ]]; then
             continue
         fi
 
