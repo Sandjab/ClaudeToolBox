@@ -1,19 +1,20 @@
 # conversation-export
 
-Outil CLI pour exporter les conversations Claude Code en Markdown.
+Outil CLI pour exporter les conversations Claude Code en Markdown ou PDF.
 
 ## Description
 
 `conversation-export` permet de :
 - Naviguer dans l'historique des conversations Claude Code via une interface TUI
 - Lister toutes les conversations disponibles
-- Exporter une conversation spécifique en fichier Markdown lisible
+- Exporter une conversation en Markdown (avec alertes GitHub) ou PDF (style chat)
 
 ## Prérequis
 
-- macOS
+- macOS / Linux
 - `jq` (parsing JSON) - requis
 - `fzf` (recherche floue) - optionnel mais recommandé
+- `weasyprint` (export PDF) - requis uniquement pour `--format pdf`
 
 ### Installation des dépendances
 
@@ -23,6 +24,9 @@ brew install jq
 
 # fzf (optionnel - active la recherche floue)
 brew install fzf
+
+# weasyprint (optionnel - requis pour export PDF)
+pip install weasyprint
 ```
 
 ## Installation
@@ -72,7 +76,7 @@ Affiche toutes les conversations avec leur numéro, date, projet et titre.
 ### Exporter une conversation spécifique
 
 ```bash
-# Export vers un fichier auto-nommé (<slug>.md)
+# Export Markdown vers un fichier auto-nommé (<slug>.md)
 ./conversation-export -e 3
 
 # Export vers un fichier spécifique
@@ -83,6 +87,19 @@ Affiche toutes les conversations avec leur numéro, date, projet et titre.
 
 # Export vers stdout
 ./conversation-export -e 3 -o -
+```
+
+### Export PDF
+
+```bash
+# Export PDF avec style chat
+./conversation-export -e 3 -f pdf
+
+# Export PDF vers un fichier spécifique
+./conversation-export -e 3 -f pdf -o ma-conversation.pdf
+
+# Mode interactif avec export PDF
+./conversation-export -f pdf
 ```
 
 ### Filtrer par projet
@@ -99,16 +116,22 @@ Affiche toutes les conversations avec leur numéro, date, projet et titre.
 | (aucune) | Mode interactif (fzf si disponible, sinon TUI) |
 | `-l, --list` | Liste les conversations (sans interactivité) |
 | `-e, --export <id>` | Exporte la conversation numéro `<id>` |
-| `-o, --output <file>` | Fichier de sortie (défaut: `<slug>.md`, `-` pour stdout) |
+| `-o, --output <file>` | Fichier de sortie (défaut: `<slug>.md/pdf`, `-` pour stdout) |
+| `-f, --format <fmt>` | Format de sortie: `md` ou `pdf` (défaut: `md`) |
 | `--with-code` | Inclut les blocs de code (défaut: texte seul) |
 | `--project <name>` | Filtre par nom de projet |
 | `--no-fzf` | Force le TUI intégré (désactive fzf) |
+| `--max-output-lines <N>` | Limite de lignes pour les outputs (défaut: 30) |
+| `--include-agents` | Inclure les résultats d'agents (défaut: exclus) |
+| `--show-outputs` | Afficher les outputs (défaut: masqués avec "...") |
 | `-h, --help` | Affiche l'aide |
 | `-v, --version` | Affiche la version |
 
-## Format de sortie
+## Formats de sortie
 
-Le fichier Markdown généré contient :
+### Markdown (`-f md`, défaut)
+
+Le fichier Markdown utilise les alertes GitHub pour distinguer les interlocuteurs :
 
 ```markdown
 # Conversation: titre-de-la-conversation
@@ -118,18 +141,48 @@ Le fichier Markdown généré contient :
 
 ---
 
-**Utilisateur** :
+> [!CAUTION]
+> #### Message de l'utilisateur...
 
-Premier message de l'utilisateur...
-
-*Claude* :
-
-Réponse de Claude...
-
-**Utilisateur** :
-
-Suite de la conversation...
+> [!NOTE]
+> Réponse de Claude...
+>
+> ...
+>
+> Suite de la réponse...
 ```
+
+- Messages utilisateur : bloc `[!CAUTION]` (fond rouge sur GitHub)
+- Réponses Claude : bloc `[!NOTE]` (fond bleu sur GitHub)
+- Outputs d'outils : masqués par `...` (ou affichés avec `--show-outputs`)
+
+### PDF (`-f pdf`)
+
+Le PDF utilise un style chat avec bulles de conversation :
+
+```
+┌────────────────────────────────────────────┐
+│        Titre de la conversation            │
+│     Projet: NomDuProjet • Date: 2026-01-18 │
+├────────────────────────────────────────────┤
+│                                            │
+│  ┌─────────────────────────┐               │
+│  │ 👤 Utilisateur          │  ← vert clair │
+│  │ Message de l'utilisateur│               │
+│  └─────────────────────────┘               │
+│                                            │
+│               ┌─────────────────────────┐  │
+│  bleu clair → │ 🤖 Claude               │  │
+│               │ Réponse de Claude...    │  │
+│               └─────────────────────────┘  │
+│                                            │
+└────────────────────────────────────────────┘
+```
+
+- Format A4 avec marges de 2cm
+- Messages utilisateur : alignés à gauche, fond vert clair (#DCF8C6)
+- Messages Claude : alignés à droite, fond bleu clair (#E3F2FD)
+- Outputs d'outils : complètement masqués
 
 ## Structure des données Claude Code
 
@@ -150,6 +203,7 @@ Voir le répertoire `examples/` pour des exemples de conversations exportées.
 
 ## Limitations
 
-- Les pensées de Claude (`thinking`) sont exclues par défaut
-- Les appels d'outils (`tool_use`) sont exclus par défaut
+- Les pensées de Claude (`thinking`) sont exclues
+- Les appels d'outils (`tool_use`) sont exclus
 - Seul le contenu textuel est exporté (pas les images)
+- Export PDF nécessite WeasyPrint
