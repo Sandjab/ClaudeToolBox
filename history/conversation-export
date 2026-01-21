@@ -17,7 +17,7 @@ DIM='\033[2m'
 NC='\033[0m'
 
 CLAUDE_DIR="$HOME/.claude/projects"
-VERSION="1.3.0"
+VERSION="1.3.1"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Fonctions utilitaires
@@ -32,19 +32,6 @@ error() { echo -e "${RED}[ERREUR]${NC} $1" >&2; exit 1; }
 check_dependencies() {
     if ! command -v jq &>/dev/null; then
         error "jq est requis. Installez-le avec: brew install jq"
-    fi
-}
-
-check_weasyprint() {
-    if ! command -v weasyprint &>/dev/null; then
-        error "weasyprint est requis pour l'export PDF. Installez-le avec: pip install weasyprint"
-    fi
-}
-
-# Configure l'environnement pour WeasyPrint sur macOS (bibliothèques Homebrew)
-setup_weasyprint_env() {
-    if [[ "$(uname)" == "Darwin" ]] && [[ -d "/opt/homebrew/lib" ]]; then
-        export DYLD_LIBRARY_PATH="/opt/homebrew/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
     fi
 }
 
@@ -63,7 +50,7 @@ ${BOLD}OPTIONS${NC}
     -l, --list          Liste les conversations (sans interactivité)
     -e, --export <id>   Exporte directement la conversation #id
     -o, --output <file> Fichier de sortie (défaut: <slug>.md ou stdout)
-    -f, --format <fmt>  Format de sortie: md ou pdf (défaut: md)
+    -f, --format <fmt>  Format de sortie: md ou html (défaut: md)
     --with-code         Inclut les blocs de code (défaut: texte seul)
     --project <name>    Filtre par nom de projet
     --no-fzf            Force le TUI intégré (désactive fzf)
@@ -79,7 +66,7 @@ ${BOLD}EXEMPLES${NC}
     conversation-export -e 3         # Exporte la conversation #3
     conversation-export -e 1 -o conv.md --with-code
     conversation-export -e 1 --max-output-lines 50 --include-agents
-    conversation-export -e 1 -f pdf -o conversation.pdf  # Export PDF
+    conversation-export -e 1 -f html -o conversation.html  # Export HTML
 
 ${BOLD}FORMAT DE SORTIE${NC}
     Le fichier Markdown généré contient :
@@ -509,9 +496,9 @@ extract_text_content() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Template CSS pour export PDF (style chat)
+# Template CSS pour export HTML (style chat)
 # ─────────────────────────────────────────────────────────────────────────────
-get_pdf_css() {
+get_html_css() {
     cat << 'CSSEOF'
 @page {
     size: A4;
@@ -602,17 +589,20 @@ CSSEOF
 # ─────────────────────────────────────────────────────────────────────────────
 escape_html() {
     local text="$1"
+    # Supprimer les octets nuls et caractères de contrôle problématiques
+    text=$(printf '%s' "$text" | tr -d '\000\001\002\003\004\005\006\007\010\013\014\016\017\020\021\022\023\024\025\026\027\030\031\032\033\034\035\036\037')
     text="${text//&/&amp;}"
     text="${text//</&lt;}"
     text="${text//>/&gt;}"
     text="${text//\"/&quot;}"
-    echo "$text"
+    text="${text//\\/&#92;}"
+    printf '%s' "$text"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Export d'une conversation en PDF
+# Export d'une conversation en HTML
 # ─────────────────────────────────────────────────────────────────────────────
-export_conversation_pdf() {
+export_conversation_html() {
     local jsonl_file="$1"
     local output_file="${2:-}"
     local with_code="${3:-false}"
@@ -634,25 +624,27 @@ export_conversation_pdf() {
         local safe_title
         safe_title=$(echo "$title" | tr -cd '[:alnum:]-_' | cut -c1-50)
         [[ -z "$safe_title" ]] && safe_title="conversation"
-        output_file="${safe_title}.pdf"
+        output_file="${safe_title}.html"
     fi
 
     # Construire le HTML
     local html_content=""
-    html_content+="<!DOCTYPE html>\n<html lang=\"fr\">\n<head>\n"
-    html_content+="<meta charset=\"UTF-8\">\n"
-    html_content+="<title>$(escape_html "$title")</title>\n"
-    html_content+="<style>\n$(get_pdf_css)\n</style>\n"
-    html_content+="</head>\n<body>\n"
-
-    # En-tête
-    html_content+="<div class=\"header\">\n"
-    html_content+="<h1>$(escape_html "$title")</h1>\n"
-    html_content+="<div class=\"meta\">Projet: $(escape_html "$proj") &bull; Date: ${date_str}</div>\n"
-    html_content+="</div>\n"
-
-    # Conversation
-    html_content+="<div class=\"conversation\">\n"
+    html_content+='<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>'"$(escape_html "$title")"'</title>
+<style>
+'"$(get_html_css)"'
+</style>
+</head>
+<body>
+<div class="header">
+<h1>'"$(escape_html "$title")"'</h1>
+<div class="meta">Projet: '"$(escape_html "$proj")"' &bull; Date: '"${date_str}"'</div>
+</div>
+<div class="conversation">
+'
 
     # Lire et traiter les messages
     while IFS= read -r line; do
@@ -697,35 +689,27 @@ export_conversation_pdf() {
 
         # Ajouter le message
         if [[ "$role" == "user" ]]; then
-            html_content+="<div class=\"message user\">\n"
-            html_content+="<div class=\"role\">👤 Utilisateur</div>\n"
-            html_content+="<div class=\"content\">${escaped_content}</div>\n"
-            html_content+="</div>\n"
+            html_content+='<div class="message user">
+<div class="role">👤 Utilisateur</div>
+<div class="content">'"${escaped_content}"'</div>
+</div>
+'
         elif [[ "$role" == "assistant" ]]; then
-            html_content+="<div class=\"message assistant\">\n"
-            html_content+="<div class=\"role\">🤖 Claude</div>\n"
-            html_content+="<div class=\"content\">${escaped_content}</div>\n"
-            html_content+="</div>\n"
+            html_content+='<div class="message assistant">
+<div class="role">🤖 Claude</div>
+<div class="content">'"${escaped_content}"'</div>
+</div>
+'
         fi
     done < "$jsonl_file"
 
-    html_content+="</div>\n</body>\n</html>"
+    html_content+='</div>
+</body>
+</html>'
 
-    # Créer le fichier HTML temporaire
-    local temp_html
-    temp_html=$(mktemp /tmp/conversation-XXXXXX.html)
-    echo -e "$html_content" > "$temp_html"
-
-    # Convertir en PDF avec WeasyPrint
-    if weasyprint "$temp_html" "$output_file" 2>/dev/null; then
-        info "Conversation exportée vers: ${output_file}"
-    else
-        rm -f "$temp_html"
-        error "Échec de la conversion PDF"
-    fi
-
-    # Nettoyer
-    rm -f "$temp_html"
+    # Écrire le fichier HTML (en filtrant les octets nuls)
+    printf '%s' "$html_content" | tr -d '\000' > "$output_file"
+    info "Conversation exportée vers: ${output_file}"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -761,10 +745,14 @@ export_conversation() {
 
     # Générer le contenu Markdown
     local md_content=""
-    md_content+="# Conversation: ${title}\n\n"
-    md_content+="**Projet**: ${proj}  \n"
-    md_content+="**Date**: ${date_str}\n\n"
-    md_content+="---\n\n"
+    md_content+='# Conversation: '"${title}"'
+
+**Projet**: '"${proj}"'
+**Date**: '"${date_str}"'
+
+---
+
+'
 
     # Buffer pour merger les réponses Claude et outputs consécutifs
     local note_buffer=""
@@ -831,15 +819,21 @@ export_conversation() {
                 # Flush les notes accumulées avant le message utilisateur
                 if [[ -n "$note_buffer" ]]; then
                     local quoted_notes
-                    quoted_notes=$(echo "$note_buffer" | sed 's/^/> /')
-                    md_content+="\n> [!NOTE]\n${quoted_notes}\n"
+                    quoted_notes=$(printf '%s' "$note_buffer" | sed 's/^/> /')
+                    md_content+='
+> [!NOTE]
+'"${quoted_notes}"'
+'
                     note_buffer=""
                 fi
 
                 # Message utilisateur en bloc CAUTION avec texte en H4
                 local quoted_content
-                quoted_content=$(echo "$content" | sed 's/^/> #### /')
-                md_content+="\n> [!CAUTION]\n${quoted_content}\n"
+                quoted_content=$(printf '%s' "$content" | sed 's/^/> #### /')
+                md_content+='
+> [!CAUTION]
+'"${quoted_content}"'
+'
             fi
         elif [[ "$role" == "assistant" ]]; then
             # Accumuler la réponse Claude dans le buffer
@@ -853,15 +847,18 @@ export_conversation() {
     # Flush final si notes restantes
     if [[ -n "$note_buffer" ]]; then
         local quoted_notes
-        quoted_notes=$(echo "$note_buffer" | sed 's/^/> /')
-        md_content+="\n> [!NOTE]\n${quoted_notes}\n"
+        quoted_notes=$(printf '%s' "$note_buffer" | sed 's/^/> /')
+        md_content+='
+> [!NOTE]
+'"${quoted_notes}"'
+'
     fi
 
     # Écrire le fichier
     if [[ "$output_file" == "-" ]]; then
-        echo -e "$md_content"
+        printf '%s' "$md_content"
     else
-        echo -e "$md_content" > "$output_file"
+        printf '%s' "$md_content" > "$output_file"
         info "Conversation exportée vers: ${output_file}"
     fi
 }
@@ -873,7 +870,7 @@ parse_args() {
     MODE="interactive"
     EXPORT_ID=""
     OUTPUT_FILE=""
-    OUTPUT_FORMAT="md"      # md ou pdf
+    OUTPUT_FORMAT="md"      # md ou html
     WITH_CODE="false"
     PROJECT_FILTER=""
     USE_FZF="auto"  # auto, true, false
@@ -916,10 +913,10 @@ parse_args() {
                 ;;
             -f|--format)
                 if [[ -z "${2:-}" || "$2" =~ ^- ]]; then
-                    error "L'option -f/--format nécessite un format (md ou pdf)"
+                    error "L'option -f/--format nécessite un format (md ou html)"
                 fi
-                if [[ "$2" != "md" && "$2" != "pdf" ]]; then
-                    error "Format invalide: $2. Utilisez 'md' ou 'pdf'"
+                if [[ "$2" != "md" && "$2" != "html" ]]; then
+                    error "Format invalide: $2. Utilisez 'md' ou 'html'"
                 fi
                 OUTPUT_FORMAT="$2"
                 shift 2
@@ -971,12 +968,6 @@ main() {
     check_dependencies
     parse_args "$@"
 
-    # Vérifier WeasyPrint si export PDF demandé
-    if [[ "$OUTPUT_FORMAT" == "pdf" ]]; then
-        check_weasyprint
-        setup_weasyprint_env
-    fi
-
     # Charger la liste des conversations (compatible bash 3.x)
     local -a conversations=()
     while IFS= read -r line; do
@@ -1001,8 +992,8 @@ main() {
             local idx=$((EXPORT_ID - 1))
             local file
             file=$(echo "${conversations[$idx]}" | cut -d'|' -f1)
-            if [[ "$OUTPUT_FORMAT" == "pdf" ]]; then
-                export_conversation_pdf "$file" "$OUTPUT_FILE" "$WITH_CODE"
+            if [[ "$OUTPUT_FORMAT" == "html" ]]; then
+                export_conversation_html "$file" "$OUTPUT_FILE" "$WITH_CODE"
             else
                 export_conversation "$file" "$OUTPUT_FILE" "$WITH_CODE" "$MAX_OUTPUT_LINES" "$INCLUDE_AGENTS" "$SHOW_OUTPUTS"
             fi
@@ -1021,8 +1012,8 @@ main() {
             fi
             if [[ -n "$selected_file" ]]; then
                 clear
-                if [[ "$OUTPUT_FORMAT" == "pdf" ]]; then
-                    export_conversation_pdf "$selected_file" "$OUTPUT_FILE" "$WITH_CODE"
+                if [[ "$OUTPUT_FORMAT" == "html" ]]; then
+                    export_conversation_html "$selected_file" "$OUTPUT_FILE" "$WITH_CODE"
                 else
                     export_conversation "$selected_file" "$OUTPUT_FILE" "$WITH_CODE" "$MAX_OUTPUT_LINES" "$INCLUDE_AGENTS" "$SHOW_OUTPUTS"
                 fi

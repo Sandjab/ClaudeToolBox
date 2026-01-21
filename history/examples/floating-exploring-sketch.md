@@ -1,6 +1,6 @@
 # Conversation: floating-exploring-sketch
 
-**Projet**: deck  
+**Projet**: deck
 **Date**: 2026-01-18
 
 ---
@@ -826,4 +826,3 @@
 
 > [!NOTE]
 > ✌️
-
