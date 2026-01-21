@@ -222,13 +222,7 @@ Export Markdown utilisant les alertes GitHub :
 - Réponses Claude en bloc `[!NOTE]` (fond bleu)
 - Outputs d'outils masqués par `...`
 
-```markdown
-> [!CAUTION]
-> #### commit, push, create a pull request and merge it
-
-> [!NOTE]
-> I'll help you commit, push, create a PR, and merge it...
-```
+![Aperçu du rendu Markdown](examples/floating-exploring-sketch-md.png)
 
 ### HTML : [`floating-exploring-sketch.html`](examples/floating-exploring-sketch.html)
 
@@ -237,23 +231,7 @@ Export HTML avec style chat (bulles de conversation) :
 - Messages Claude : alignés à droite, fond bleu clair (#E3F2FD)
 - Format A4 optimisé pour l'impression/PDF via navigateur
 
-Aperçu du rendu :
-
-```
-┌────────────────────────────────────────────┐
-│       floating-exploring-sketch            │
-│     Projet: deck • Date: 2026-01-18        │
-├────────────────────────────────────────────┤
-│  ┌─────────────────────────┐               │
-│  │ 👤 Utilisateur          │  ← vert clair │
-│  │ commit, push, create... │               │
-│  └─────────────────────────┘               │
-│               ┌─────────────────────────┐  │
-│  bleu clair → │ 🤖 Claude               │  │
-│               │ I'll help you commit... │  │
-│               └─────────────────────────┘  │
-└────────────────────────────────────────────┘
-```
+![Aperçu du rendu HTML](examples/floating-exploring-sketch-html.png)
 
 ## Limitations
 
