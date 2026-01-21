@@ -213,7 +213,47 @@ Chaque fichier `.jsonl` contient une ligne JSON par événement :
 
 ## Exemples
 
-Voir le répertoire `examples/` pour des exemples de conversations exportées.
+Le répertoire `examples/` contient des snapshots de conversations exportées dans les deux formats :
+
+### Markdown : [`floating-exploring-sketch.md`](examples/floating-exploring-sketch.md)
+
+Export Markdown utilisant les alertes GitHub :
+- Messages utilisateur en bloc `[!CAUTION]` (fond rouge)
+- Réponses Claude en bloc `[!NOTE]` (fond bleu)
+- Outputs d'outils masqués par `...`
+
+```markdown
+> [!CAUTION]
+> #### commit, push, create a pull request and merge it
+
+> [!NOTE]
+> I'll help you commit, push, create a PR, and merge it...
+```
+
+### HTML : [`floating-exploring-sketch.html`](examples/floating-exploring-sketch.html)
+
+Export HTML avec style chat (bulles de conversation) :
+- Messages utilisateur : alignés à gauche, fond vert clair (#DCF8C6)
+- Messages Claude : alignés à droite, fond bleu clair (#E3F2FD)
+- Format A4 optimisé pour l'impression/PDF via navigateur
+
+Aperçu du rendu :
+
+```
+┌────────────────────────────────────────────┐
+│       floating-exploring-sketch            │
+│     Projet: deck • Date: 2026-01-18        │
+├────────────────────────────────────────────┤
+│  ┌─────────────────────────┐               │
+│  │ 👤 Utilisateur          │  ← vert clair │
+│  │ commit, push, create... │               │
+│  └─────────────────────────┘               │
+│               ┌─────────────────────────┐  │
+│  bleu clair → │ 🤖 Claude               │  │
+│               │ I'll help you commit... │  │
+│               └─────────────────────────┘  │
+└────────────────────────────────────────────┘
+```
 
 ## Limitations
 
