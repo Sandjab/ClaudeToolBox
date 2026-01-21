@@ -1,20 +1,19 @@
 # conversation-export
 
-Outil CLI pour exporter les conversations Claude Code en Markdown ou PDF.
+Outil CLI pour exporter les conversations Claude Code en Markdown ou HTML.
 
 ## Description
 
 `conversation-export` permet de :
 - Naviguer dans l'historique des conversations Claude Code via une interface TUI
 - Lister toutes les conversations disponibles
-- Exporter une conversation en Markdown (avec alertes GitHub) ou PDF (style chat)
+- Exporter une conversation en Markdown (avec alertes GitHub) ou HTML (style chat)
 
 ## Prérequis
 
 - macOS / Linux
 - `jq` (parsing JSON) - requis
 - `fzf` (recherche floue) - optionnel mais recommandé
-- `weasyprint` (export PDF) - requis uniquement pour `--format pdf`
 
 ### Installation des dépendances
 
@@ -24,24 +23,7 @@ brew install jq
 
 # fzf (optionnel - active la recherche floue)
 brew install fzf
-
-# weasyprint (optionnel - requis pour export PDF)
-# Dépendances système (macOS)
-brew install pango glib gobject-introspection
-
-# Option 1 : avec l'environnement virtuel du projet
-source .venv/bin/activate
-pip install -r requirements.txt
-
-# Option 2 : installation directe
-pip install weasyprint
 ```
-
-> [!NOTE]
-> Pour l'export PDF, `weasyprint` doit être accessible dans le PATH. Si vous utilisez l'environnement virtuel, activez-le avant d'exécuter le script ou ajoutez `.venv/bin` au PATH :
-> ```bash
-> PATH=".venv/bin:$PATH" ./conversation-export -f pdf -e 1
-> ```
 
 ## Installation
 
@@ -103,17 +85,17 @@ Affiche toutes les conversations avec leur numéro, date, projet et titre.
 ./conversation-export -e 3 -o -
 ```
 
-### Export PDF
+### Export HTML
 
 ```bash
-# Export PDF avec style chat
-./conversation-export -e 3 -f pdf
+# Export HTML avec style chat
+./conversation-export -e 3 -f html
 
-# Export PDF vers un fichier spécifique
-./conversation-export -e 3 -f pdf -o ma-conversation.pdf
+# Export HTML vers un fichier spécifique
+./conversation-export -e 3 -f html -o ma-conversation.html
 
-# Mode interactif avec export PDF
-./conversation-export -f pdf
+# Mode interactif avec export HTML
+./conversation-export -f html
 ```
 
 ### Filtrer par projet
@@ -130,8 +112,8 @@ Affiche toutes les conversations avec leur numéro, date, projet et titre.
 | (aucune) | Mode interactif (fzf si disponible, sinon TUI) |
 | `-l, --list` | Liste les conversations (sans interactivité) |
 | `-e, --export <id>` | Exporte la conversation numéro `<id>` |
-| `-o, --output <file>` | Fichier de sortie (défaut: `<slug>.md/pdf`, `-` pour stdout) |
-| `-f, --format <fmt>` | Format de sortie: `md` ou `pdf` (défaut: `md`) |
+| `-o, --output <file>` | Fichier de sortie (défaut: `<slug>.md/html`, `-` pour stdout) |
+| `-f, --format <fmt>` | Format de sortie: `md` ou `html` (défaut: `md`) |
 | `--with-code` | Inclut les blocs de code (défaut: texte seul) |
 | `--project <name>` | Filtre par nom de projet |
 | `--no-fzf` | Force le TUI intégré (désactive fzf) |
@@ -170,33 +152,17 @@ Le fichier Markdown utilise les alertes GitHub pour distinguer les interlocuteur
 - Réponses Claude : bloc `[!NOTE]` (fond bleu sur GitHub)
 - Outputs d'outils : masqués par `...` (ou affichés avec `--show-outputs`)
 
-### PDF (`-f pdf`)
+### HTML (`-f html`)
 
-Le PDF utilise un style chat avec bulles de conversation :
+Le HTML utilise un style chat avec bulles de conversation :
 
-```
-┌────────────────────────────────────────────┐
-│        Titre de la conversation            │
-│     Projet: NomDuProjet • Date: 2026-01-18 │
-├────────────────────────────────────────────┤
-│                                            │
-│  ┌─────────────────────────┐               │
-│  │ 👤 Utilisateur          │  ← vert clair │
-│  │ Message de l'utilisateur│               │
-│  └─────────────────────────┘               │
-│                                            │
-│               ┌─────────────────────────┐  │
-│  bleu clair → │ 🤖 Claude               │  │
-│               │ Réponse de Claude...    │  │
-│               └─────────────────────────┘  │
-│                                            │
-└────────────────────────────────────────────┘
-```
-
-- Format A4 avec marges de 2cm
+- Format A4 optimisé pour l'impression via navigateur
 - Messages utilisateur : alignés à gauche, fond vert clair (#DCF8C6)
 - Messages Claude : alignés à droite, fond bleu clair (#E3F2FD)
 - Outputs d'outils : complètement masqués
+
+> [!TIP]
+> Pour générer un PDF, ouvrez le fichier HTML dans un navigateur et utilisez Imprimer → Enregistrer en PDF.
 
 ## Structure des données Claude Code
 
@@ -238,4 +204,3 @@ Export HTML avec style chat (bulles de conversation) :
 - Les pensées de Claude (`thinking`) sont exclues
 - Les appels d'outils (`tool_use`) sont exclus
 - Seul le contenu textuel est exporté (pas les images)
-- Export PDF nécessite WeasyPrint
